@@ -221,7 +221,7 @@ net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [25,50,75,100]
-epochs = 100 # 5 or 100
+epochs = 0 # 5 or 100
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -400,11 +400,28 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
             A, b = torch.stack(A_list), torch.stack(b_list)
             x, LU = torch.solve(b, A)
             parameter_idx = 0
-            for parameter in net.parameters():
+            for idx, parameter in enumerate(net.parameters()):
                 if parameter.nelement() < minimum_parameter_size:
                     continue
                 update_indices = update_indices_list[parameter_idx]
-                parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] # newton's update
+
+                # line search
+                grad_improvement = parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
+                if grad_improvement > 0:
+                    parameter.data.flatten()[update_indices] -= 2 * x[parameter_idx][:,0] # -2 grad
+                    for lineserach_idx in range(0,10): # at most 10 iterations of line search
+                        alpha_rate = 0.5 ** linesearch_idx
+                        ita = 0.5
+                        parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
+                        tmp_output = net(inputs).detach()
+                        tmp_loss = criterion(outputs, targets)
+                        if tmp_loss <= loss.item() - ita * alpha_rate * grad_improvement: # if the improvement is good enough
+                            break
+                    parameter.grad.flatten()[update_indices] = 0
+                else:
+                    # do nothing and debug, it is probably due to the non-positive definite issue
+                    print(grad_improvement)
+
                 parameter_idx += 1
 
             # update optimizer state
