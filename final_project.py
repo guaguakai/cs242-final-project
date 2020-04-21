@@ -32,7 +32,6 @@ import torchvision.transforms as transforms
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
-!pip install ninja
 
 """**Loading the Train and Test Datasets**
 
@@ -222,7 +221,7 @@ net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [25,50,75,100]
-epochs = 5 # 5 or 100
+epochs = 100 # 5 or 100
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -249,6 +248,7 @@ for epoch in range(0, epochs):
 total_time = time.time() - start_time
 print('Total training time: {} seconds'.format(total_time))
 
+# ============ plotting the training loss and testing accuracy ============
 import matplotlib.pyplot as plt
 
 moving_average_train_loss = moving_average(train_loss_tracker)
@@ -256,12 +256,16 @@ moving_average_train_loss = moving_average(train_loss_tracker)
 plt.xlabel('batches')
 plt.ylabel('training loss')
 plt.plot(moving_average_train_loss)
-plt.show()
+plt.savefig('figures/sgd_training_loss.png')
+# plt.show()
 
 plt.xlabel('epochs')
 plt.ylabel('testing accuracy')
 plt.plot(list(range(len(test_acc_tracker))), test_acc_tracker)
-plt.show()
+plt.savefig('figures/sgd_testing_acc.png')
+# plt.show()
+
+
 
 """Newton method implementation."""
 
@@ -312,7 +316,7 @@ net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [25,50,75,100]
-epochs = 1 # 5 or 100
+epochs = 0 # 5 or 100
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -355,10 +359,13 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = net(inputs)
-            loss = criterion(outputs, targets)
-            optimizer.zero_grad()
-            loss.backward(create_graph=True, retain_graph=True)
             if batch_idx % number_batches_recompute == 0:
+                batch_size = len(inputs)
+                subsample_size = 4
+                random_indices = np.random.choice(batch_size, subsample_size)
+                loss = criterion(outputs[random_indices], targets[random_indices])
+                optimizer.zero_grad()
+                loss.backward(create_graph=True, retain_graph=True)
                 A_list = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
                 update_indices_list = [np.random.choice(parameter.nelement(), fixed_size) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
 
@@ -378,6 +385,9 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
             b_list = []
             parameter_idx = 0
+            loss = criterion(outputs, targets)
+            optimizer.zero_grad()
+            loss.backward(create_graph=True, retain_graph=True)
             for parameter in net.parameters():
                 if parameter.nelement() < minimum_parameter_size:
                     continue
@@ -447,3 +457,21 @@ for epoch in range(0, epochs):
 
 total_time = time.time() - start_time
 print('Total training time: {} seconds'.format(total_time))
+
+
+# ============ plotting the training loss and testing accuracy ============
+import matplotlib.pyplot as plt
+
+moving_average_train_loss = moving_average(train_loss_tracker)
+
+plt.xlabel('batches')
+plt.ylabel('training loss')
+plt.plot(moving_average_train_loss)
+plt.savefig('figures/block_training_loss.png')
+# plt.show()
+
+plt.xlabel('epochs')
+plt.ylabel('testing accuracy')
+plt.plot(list(range(len(test_acc_tracker))), test_acc_tracker)
+plt.savefig('figures/block_testing_acc.png')
+# plt.show()
