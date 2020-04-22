@@ -216,59 +216,6 @@ def test(epoch, test_loss_tracker, test_acc_tracker):
         torch.save(state, './checkpoint/ckpt.pth')
         best_acc = acc
 
-device = 'cuda'
-net = ConvNet()
-net = net.to(device)
-lr = 0.1 # 0.1, 1.0, 0.0001
-milestones = [25,50,75,100]
-epochs = 0 # 5 or 100
-
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
-                            weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
-                                                 milestones=milestones,
-                                                 gamma=0.1)
-
-# Records the training loss and training accuracy during training
-train_loss_tracker, train_acc_tracker = [], []
-
-# Records the test loss and test accuracy during training
-test_loss_tracker, test_acc_tracker = [], []
-
-print('Training for {} epochs, with learning rate {} and milestones {}'.format(
-      epochs, lr, milestones))
-
-start_time = time.time()
-for epoch in range(0, epochs):
-    train(epoch, train_loss_tracker, train_acc_tracker)
-    test(epoch, test_loss_tracker, test_acc_tracker)
-    scheduler.step()
-
-total_time = time.time() - start_time
-print('Total training time: {} seconds'.format(total_time))
-
-# ============ plotting the training loss and testing accuracy ============
-import matplotlib.pyplot as plt
-
-moving_average_train_loss = moving_average(train_loss_tracker)
-
-plt.xlabel('batches')
-plt.ylabel('training loss')
-plt.plot(moving_average_train_loss)
-plt.savefig('figures/sgd_training_loss.png')
-# plt.show()
-plt.clf()
-
-plt.xlabel('epochs')
-plt.ylabel('testing accuracy')
-plt.plot(list(range(len(test_acc_tracker))), test_acc_tracker)
-plt.savefig('figures/sgd_testing_acc.png')
-# plt.show()
-plt.clf()
-
-
-
 """Newton method implementation."""
 
 def newton_train(epoch, train_loss_tracker, train_acc_tracker):
@@ -314,38 +261,6 @@ def newton_train(epoch, train_loss_tracker, train_acc_tracker):
     train_acc_tracker.append(acc)
     sys.stdout.flush()
 
-device = 'cuda'
-net = ConvNet()
-net = net.to(device)
-lr = 0.1 # 0.1, 1.0, 0.0001
-milestones = [25,50,75,100]
-epochs = 0 # 5 or 100
-
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
-                            weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
-                                                 milestones=milestones,
-                                                 gamma=0.1)
-
-# Records the training loss and training accuracy during training
-train_loss_tracker, train_acc_tracker = [], []
-
-# Records the test loss and test accuracy during training
-test_loss_tracker, test_acc_tracker = [], []
-
-print('Training for {} epochs, with learning rate {} and milestones {}'.format(
-      epochs, lr, milestones))
-
-start_time = time.time()
-for epoch in range(0, epochs):
-    newton_train(epoch, train_loss_tracker, train_acc_tracker)
-    test(epoch, test_loss_tracker, test_acc_tracker)
-    scheduler.step()
-
-total_time = time.time() - start_time
-print('Total training time: {} seconds'.format(total_time))
-
 """Block Newton's method implementation."""
 
 def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
@@ -354,7 +269,6 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     train_loss = 0
     correct = 0
     total = 0
-    fixed_size = 48
     number_batches_recompute = 1
     regularization_const = 0.1
     minimum_parameter_size = 100
@@ -455,7 +369,6 @@ def condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     train_loss = 0
     correct = 0
     total = 0
-    fixed_size = 16
     regularization_const = 0.1
     minimum_parameter_size = 100
     with tqdm.tqdm(trainloader) as tqdm_loader:
@@ -483,7 +396,7 @@ def condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     z = grad @ torch.Tensor(v).to(device)
                     return torch.autograd.grad(z, parameter, retain_graph=True)[0].cpu().detach().flatten()[update_indices].numpy() + regularization_const * v
                 A = LinearOperator((fixed_size, fixed_size), matvec=mv)
-                x, info = scipy.sparse.linalg.cg(A, parameter.grad.cpu().detach().flatten()[update_indices], maxiter=100) 
+                x, info = scipy.sparse.linalg.cg(A, parameter.grad.cpu().detach().flatten()[update_indices]) 
                 x = torch.Tensor(x).to(device)
                 x_list.append(x)
 
@@ -527,6 +440,7 @@ net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [25,50,75,100]
 epochs = 5 # 5 or 100
+fixed_size = 16
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -546,6 +460,9 @@ print('Training for {} epochs, with learning rate {} and milestones {}'.format(
 
 start_time = time.time()
 for epoch in range(0, epochs):
+    # train(epoch, train_loss_tracker, train_acc_tracker)
+    # newton_train(epoch, train_loss_tracker, train_acc_tracker)
+    # block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
     condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
     test(epoch, test_loss_tracker, test_acc_tracker)
     scheduler.step()
