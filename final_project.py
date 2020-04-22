@@ -51,7 +51,7 @@ trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
                                         download=True,
                                         transform=transform_train)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                          shuffle=True, num_workers=2)
+                                          shuffle=True, num_workers=8)
 
 # Load testing data
 transform_test = transforms.Compose([                                           
@@ -258,12 +258,14 @@ plt.ylabel('training loss')
 plt.plot(moving_average_train_loss)
 plt.savefig('figures/sgd_training_loss.png')
 # plt.show()
+plt.clf()
 
 plt.xlabel('epochs')
 plt.ylabel('testing accuracy')
 plt.plot(list(range(len(test_acc_tracker))), test_acc_tracker)
 plt.savefig('figures/sgd_testing_acc.png')
 # plt.show()
+plt.clf()
 
 
 
@@ -291,6 +293,7 @@ def newton_train(epoch, train_loss_tracker, train_acc_tracker):
                 return torch.autograd.grad(z, parameter, retain_graph=True)[0].cpu().detach().flatten().numpy() + regularization_const * v
             A = LinearOperator((parameter_size, parameter_size), matvec=mv)
             x, info = scipy.sparse.linalg.cg(A, parameter.grad.cpu().detach().flatten(), maxiter=100)
+            # x, info = scipy.sparse.linalg.cg(A, parameter.grad.cpu().detach().flatten())
             parameter.grad = torch.Tensor(x.reshape(parameter.grad.shape)).to(device)
 
         # update optimizer state
@@ -351,8 +354,8 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     train_loss = 0
     correct = 0
     total = 0
-    fixed_size = 16
-    number_batches_recompute = 32
+    fixed_size = 48
+    number_batches_recompute = 1
     regularization_const = 0.1
     minimum_parameter_size = 100
     with tqdm.tqdm(trainloader) as tqdm_loader:
@@ -361,9 +364,10 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
             outputs = net(inputs)
             if batch_idx % number_batches_recompute == 0:
                 batch_size = len(inputs)
-                subsample_size = 4
+                subsample_size = 10
                 random_indices = np.random.choice(batch_size, subsample_size)
-                loss = criterion(outputs[random_indices], targets[random_indices])
+                # loss = criterion(outputs[random_indices], targets[random_indices])
+                loss = criterion(outputs, targets)
                 optimizer.zero_grad()
                 loss.backward(create_graph=True, retain_graph=True)
                 A_list = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
@@ -407,9 +411,10 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
                 # line search
                 grad_improvement = parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
+                # print('line search improvement:', grad_improvement)
                 if grad_improvement > 0:
                     parameter.data.flatten()[update_indices] -= 2 * x[parameter_idx][:,0] # -2 grad
-                    for lineserach_idx in range(0,10): # at most 10 iterations of line search
+                    for linesearch_idx in range(0,5): # at most 10 iterations of line search
                         alpha_rate = 0.5 ** linesearch_idx
                         ita = 0.5
                         parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
@@ -418,9 +423,9 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                         if tmp_loss <= loss.item() - ita * alpha_rate * grad_improvement: # if the improvement is good enough
                             break
                     parameter.grad.flatten()[update_indices] = 0
-                else:
-                    # do nothing and debug, it is probably due to the non-positive definite issue
-                    print(grad_improvement)
+                # else:
+                #     # do nothing and debug, it is probably due to the non-positive definite issue
+                #     print('line search error with negative improvement:', grad_improvement)
 
                 parameter_idx += 1
 
@@ -443,12 +448,85 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
         train_acc_tracker.append(acc)
         sys.stdout.flush()
 
+
+def condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
+    from scipy.sparse.linalg import LinearOperator
+    net.train()
+    train_loss = 0
+    correct = 0
+    total = 0
+    fixed_size = 16
+    regularization_const = 0.1
+    minimum_parameter_size = 100
+    with tqdm.tqdm(trainloader) as tqdm_loader:
+        for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = net(inputs)
+
+            batch_size = len(inputs)
+            loss = criterion(outputs, targets)
+            optimizer.zero_grad()
+            loss.backward(create_graph=True, retain_graph=True)
+
+            x_list = []
+            update_indices_list = []
+            for parameter in net.parameters():
+                if parameter.nelement() < minimum_parameter_size:
+                    x_list.append(None)
+                    update_indices_list.append(None)
+                    continue
+
+                update_indices = np.random.choice(parameter.nelement(), fixed_size)
+                update_indices_list.append(update_indices)
+                grad = parameter.grad.flatten()[update_indices]
+                def mv(v):
+                    z = grad @ torch.Tensor(v).to(device)
+                    return torch.autograd.grad(z, parameter, retain_graph=True)[0].cpu().detach().flatten()[update_indices].numpy() + regularization_const * v
+                A = LinearOperator((fixed_size, fixed_size), matvec=mv)
+                x, info = scipy.sparse.linalg.cg(A, parameter.grad.cpu().detach().flatten()[update_indices], maxiter=100) 
+                x = torch.Tensor(x).to(device)
+                x_list.append(x)
+
+                grad_improvement = parameter.grad.flatten()[update_indices] @ x # precompute the gradient improvement
+                if grad_improvement > 0:
+                    parameter.data.flatten()[update_indices] -= 2 * x # -2 grad
+                    for linesearch_idx in range(0,5): # at most 10 iterations of line search
+                        alpha_rate = 0.5 ** linesearch_idx
+                        ita = 0.5
+                        parameter.data.flatten()[update_indices] += x * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
+                        tmp_output = net(inputs).detach()
+                        tmp_loss = criterion(outputs, targets)
+                        if tmp_loss <= loss.item() - ita * alpha_rate * grad_improvement: # if the improvement is good enough
+                            break
+                    parameter.grad.flatten()[update_indices] = 0
+
+            # update optimizer state
+            optimizer.step()
+            # compute average loss
+            train_loss += loss.item()
+            train_loss_tracker.append(loss.item())
+            average_loss = train_loss / (batch_idx + 1)
+            # compute accuracy
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+            acc = 100. * correct / total
+            # Print status
+            tqdm_loader.set_postfix(loss=f'{average_loss:.3f}', accuracy=f'{acc:.3f}')
+            # sys.stdout.write(f'\rEpoch {epoch}: Train Loss: {loss:.3f}' +
+            #                  f'| Train Acc: {acc:.3f}')
+            # sys.stdout.flush()
+        train_acc_tracker.append(acc)
+        sys.stdout.flush()
+
+
+
 device = 'cuda'
 net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [25,50,75,100]
-epochs = 100 # 5 or 100
+epochs = 5 # 5 or 100
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -468,7 +546,7 @@ print('Training for {} epochs, with learning rate {} and milestones {}'.format(
 
 start_time = time.time()
 for epoch in range(0, epochs):
-    block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
+    condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
     test(epoch, test_loss_tracker, test_acc_tracker)
     scheduler.step()
 
@@ -486,9 +564,11 @@ plt.ylabel('training loss')
 plt.plot(moving_average_train_loss)
 plt.savefig('figures/block_training_loss.png')
 # plt.show()
+plt.clf()
 
 plt.xlabel('epochs')
 plt.ylabel('testing accuracy')
 plt.plot(list(range(len(test_acc_tracker))), test_acc_tracker)
 plt.savefig('figures/block_testing_acc.png')
 # plt.show()
+plt.clf()
