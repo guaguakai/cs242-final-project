@@ -139,8 +139,6 @@ Now that we have loaded our train and test datasets, and created our model, it i
 
 ## Code Cell 1.4
 
-torch.manual_seed(43) # to give stable randomness
-
 # tracks the highest accuracy observed so far
 best_acc = 0
 
@@ -263,13 +261,12 @@ def newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
 """Block Newton's method implementation."""
 
-def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
+def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     from scipy.sparse.linalg import LinearOperator
     net.train()
     train_loss = 0
     correct = 0
     total = 0
-    number_batches_recompute = 1
     regularization_const = 0.1
     minimum_parameter_size = 100
     with tqdm.tqdm(trainloader) as tqdm_loader:
@@ -363,7 +360,7 @@ def block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
         sys.stdout.flush()
 
 
-def condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
+def implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     from scipy.sparse.linalg import LinearOperator
     net.train()
     train_loss = 0
@@ -434,13 +431,15 @@ def condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
 
 
+method = 'explicit' # SGD, explicit, implicit, newton
 device = 'cuda'
 net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [25,50,75,100]
-epochs = 5 # 5 or 100
+epochs = 100 # 5 or 100
 fixed_size = 16
+number_batches_recompute = 32
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -460,10 +459,14 @@ print('Training for {} epochs, with learning rate {} and milestones {}'.format(
 
 start_time = time.time()
 for epoch in range(0, epochs):
-    # train(epoch, train_loss_tracker, train_acc_tracker)
-    # newton_train(epoch, train_loss_tracker, train_acc_tracker)
-    # block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
-    condition_block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
+    if method == 'SGD':
+        train(epoch, train_loss_tracker, train_acc_tracker)
+    elif method == 'newton':
+        newton_train(epoch, train_loss_tracker, train_acc_tracker)
+    elif method == 'explicit':
+        explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
+    elif method == 'implicit':
+        implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
     test(epoch, test_loss_tracker, test_acc_tracker)
     scheduler.step()
 
@@ -479,13 +482,18 @@ moving_average_train_loss = moving_average(train_loss_tracker)
 plt.xlabel('batches')
 plt.ylabel('training loss')
 plt.plot(moving_average_train_loss)
-plt.savefig('figures/block_training_loss.png')
+plt.savefig('figures/{}_training_loss.png'.format(method))
 # plt.show()
 plt.clf()
 
 plt.xlabel('epochs')
 plt.ylabel('testing accuracy')
 plt.plot(list(range(len(test_acc_tracker))), test_acc_tracker)
-plt.savefig('figures/block_testing_acc.png')
+plt.savefig('figures/{}_testing_acc.png'.format(method))
 # plt.show()
 plt.clf()
+
+f_result = open('results/{}.csv'.format(method), 'w')
+f_result.write('training loss,' + ','.join([str(x.item()) for x in moving_average_train_loss]) + '\n')
+f_result.write('testing accuracy,' + ','.join([str(x) for x in test_acc_tracker]) + '\n')
+f_result.close()
