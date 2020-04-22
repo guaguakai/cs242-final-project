@@ -324,10 +324,12 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                 grad_improvement = parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
                 # print('line search improvement:', grad_improvement)
                 if grad_improvement > 0:
-                    parameter.data.flatten()[update_indices] -= 2 * x[parameter_idx][:,0] # -2 grad
-                    for linesearch_idx in range(0,5): # at most 10 iterations of line search
+                    exp_reduction = epoch // 5
+                    scale = 0.5 ** exp_reduction
+                    parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
+                    for linesearch_idx in range(exp_reduction,10): # at most 10 iterations of line search
                         alpha_rate = 0.5 ** linesearch_idx
-                        ita = 0.5
+                        ita = 0.5 
                         parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
                         tmp_output = net(inputs).detach()
                         tmp_loss = criterion(outputs, targets)
@@ -436,8 +438,8 @@ device = 'cuda'
 net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
-milestones = [25,50,75,100]
-epochs = 100 # 5 or 100
+milestones = [5,10,15,20]
+epochs = 20 # 5 or 100
 fixed_size = 16
 number_batches_recompute = 32
 
