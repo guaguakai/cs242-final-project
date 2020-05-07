@@ -25,6 +25,7 @@ import math
 import tqdm
 import scipy
 import numpy as np
+import copy
 import torch
 import torch.nn as nn
 import torchvision
@@ -268,6 +269,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     correct = 0
     total = 0
     num_clients = 4
+    print("Number of parallel machines:", num_clients)
     regularization_const = 0.1
     minimum_parameter_size = 100
     update_indices_list = [[]] * num_clients
@@ -276,6 +278,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
             for client in range(num_clients):
+                print('Batch: {}, client: {}'.format(batch_idx, client))
                 outputs = net(inputs)
                 net_copy = copy.deepcopy(net)
                 net_copy.eval()
@@ -328,12 +331,12 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     update_indices = update_indices_list[client][parameter_idx]
 
                     # line search
-                    grad_improvement = new_parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
+                    grad_improvement = parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
                     # print('line search improvement:', grad_improvement)
                     if grad_improvement > 0:
                         exp_reduction = epoch // 5
                         scale = 0.5 ** exp_reduction
-                        nwe_parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
+                        new_parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
                         for linesearch_idx in range(exp_reduction,10): # at most 10 iterations of line search
                             alpha_rate = 0.5 ** linesearch_idx
                             ita = 0.5 
@@ -342,7 +345,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                             tmp_loss = criterion(outputs, targets)
                             if tmp_loss <= loss.item() - ita * alpha_rate * grad_improvement: # if the improvement is good enough
                                 break
-                        parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * (0.5 ** linesaerch_idx)
+                        parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * (0.5 ** linesearch_idx)
                     # else:
                     #     # do nothing and debug, it is probably due to the non-positive definite issue
                     #     print('line search error with negative improvement:', grad_improvement)
