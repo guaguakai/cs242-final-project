@@ -267,80 +267,87 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     train_loss = 0
     correct = 0
     total = 0
+    num_clients = 4
     regularization_const = 0.1
     minimum_parameter_size = 100
+    update_indices_list = [[]] * num_clients
+    A_list = [[]] * num_clients
     with tqdm.tqdm(trainloader) as tqdm_loader:
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
-            outputs = net(inputs)
-            if batch_idx % number_batches_recompute == 0:
-                batch_size = len(inputs)
-                subsample_size = 10
-                random_indices = np.random.choice(batch_size, subsample_size)
-                # loss = criterion(outputs[random_indices], targets[random_indices])
+            for client in range(num_clients):
+                outputs = net(inputs)
+                net_copy = copy.deepcopy(net)
+                net_copy.eval()
+
+                if batch_idx % number_batches_recompute == 0:
+                    batch_size = len(inputs)
+                    subsample_size = 10
+                    loss = criterion(outputs, targets)
+                    optimizer.zero_grad()
+                    loss.backward(create_graph=True, retain_graph=True)
+                    A_list[client] = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
+                    update_indices_list[client] = [np.random.choice(parameter.nelement(), fixed_size) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
+
+                    for i in range(fixed_size):
+                        v = torch.zeros(fixed_size).to(device)
+                        v[i] = 1
+                    
+                        parameter_idx = 0
+                        for parameter in net.parameters():
+                            if parameter.nelement() < minimum_parameter_size:
+                                continue
+                            update_indices = update_indices_list[client][parameter_idx]
+                            grad = parameter.grad.flatten()[update_indices]
+                            grad_v = torch.autograd.grad(grad @ v, parameter, retain_graph=True)[0].flatten()[update_indices] + 0.01 * v
+                            A_list[client][parameter_idx][:,i] = grad_v
+                            parameter_idx += 1
+
+                b_list = []
+                parameter_idx = 0
                 loss = criterion(outputs, targets)
                 optimizer.zero_grad()
                 loss.backward(create_graph=True, retain_graph=True)
-                A_list = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
-                update_indices_list = [np.random.choice(parameter.nelement(), fixed_size) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
+                for parameter in net.parameters():
+                    if parameter.nelement() < minimum_parameter_size:
+                        continue
+                    update_indices = update_indices_list[client][parameter_idx]
+                    b = parameter.grad.detach().flatten()[update_indices]
+                    b_list.append(b[:,None])
+                    parameter_idx += 1
+                    # x, LU = torch.solve(b[:,None], A)
+                    # x, info = scipy.sparse.linalg.cg(A.detach().numpy(), parameter.grad.detach().cpu().flatten()[update_indices], maxiter=100)
+                A, b = torch.stack(A_list[client]), torch.stack(b_list)
+                x, LU = torch.solve(b, A)
 
-                for i in range(fixed_size):
-                    v = torch.zeros(fixed_size).to(device)
-                    v[i] = 1
-                
-                    parameter_idx = 0
-                    for parameter in net.parameters():
-                        if parameter.nelement() < minimum_parameter_size:
-                            continue
-                        update_indices = update_indices_list[parameter_idx]
-                        grad = parameter.grad.flatten()[update_indices]
-                        grad_v = torch.autograd.grad(grad @ v, parameter, retain_graph=True)[0].flatten()[update_indices] + 0.01 * v
-                        A_list[parameter_idx][:,i] = grad_v
-                        parameter_idx += 1
+                # ================= perform line search to find the optimal step ==============
+                parameter_idx = 0
+                for (idx, new_parameter), (_, parameter) in zip(enumerate(net_copy.parameters()), enumerate(net.parameters())):
+                    if new_parameter.nelement() < minimum_parameter_size:
+                        continue
+                    update_indices = update_indices_list[client][parameter_idx]
 
-            b_list = []
-            parameter_idx = 0
-            loss = criterion(outputs, targets)
-            optimizer.zero_grad()
-            loss.backward(create_graph=True, retain_graph=True)
-            for parameter in net.parameters():
-                if parameter.nelement() < minimum_parameter_size:
-                    continue
-                update_indices = update_indices_list[parameter_idx]
-                b = parameter.grad.detach().flatten()[update_indices]
-                b_list.append(b[:,None])
-                parameter_idx += 1
-                # x, LU = torch.solve(b[:,None], A)
-                # x, info = scipy.sparse.linalg.cg(A.detach().numpy(), parameter.grad.detach().cpu().flatten()[update_indices], maxiter=100)
-            A, b = torch.stack(A_list), torch.stack(b_list)
-            x, LU = torch.solve(b, A)
-            parameter_idx = 0
-            for idx, parameter in enumerate(net.parameters()):
-                if parameter.nelement() < minimum_parameter_size:
-                    continue
-                update_indices = update_indices_list[parameter_idx]
+                    # line search
+                    grad_improvement = new_parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
+                    # print('line search improvement:', grad_improvement)
+                    if grad_improvement > 0:
+                        exp_reduction = epoch // 5
+                        scale = 0.5 ** exp_reduction
+                        nwe_parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
+                        for linesearch_idx in range(exp_reduction,10): # at most 10 iterations of line search
+                            alpha_rate = 0.5 ** linesearch_idx
+                            ita = 0.5 
+                            new_parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
+                            tmp_output = net_copy(inputs).detach()
+                            tmp_loss = criterion(outputs, targets)
+                            if tmp_loss <= loss.item() - ita * alpha_rate * grad_improvement: # if the improvement is good enough
+                                break
+                        parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * (0.5 ** linesaerch_idx)
+                    # else:
+                    #     # do nothing and debug, it is probably due to the non-positive definite issue
+                    #     print('line search error with negative improvement:', grad_improvement)
 
-                # line search
-                grad_improvement = parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
-                # print('line search improvement:', grad_improvement)
-                if grad_improvement > 0:
-                    exp_reduction = epoch // 5
-                    scale = 0.5 ** exp_reduction
-                    parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
-                    for linesearch_idx in range(exp_reduction,10): # at most 10 iterations of line search
-                        alpha_rate = 0.5 ** linesearch_idx
-                        ita = 0.5 
-                        parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
-                        tmp_output = net(inputs).detach()
-                        tmp_loss = criterion(outputs, targets)
-                        if tmp_loss <= loss.item() - ita * alpha_rate * grad_improvement: # if the improvement is good enough
-                            break
-                    parameter.grad.flatten()[update_indices] = 0
-                # else:
-                #     # do nothing and debug, it is probably due to the non-positive definite issue
-                #     print('line search error with negative improvement:', grad_improvement)
-
-                parameter_idx += 1
+                    parameter_idx += 1
 
             # update optimizer state
             optimizer.step()
