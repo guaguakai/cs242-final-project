@@ -268,108 +268,105 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     train_loss = 0
     correct = 0
     total = 0
-    num_clients = 4
+    num_clients = 1
     regularization_const = 0.1
-    minimum_parameter_size = 100
+    minimum_parameter_size = 2000
     update_indices_list = [[]] * num_clients
     A_list = [[]] * num_clients
     with tqdm.tqdm(trainloader) as tqdm_loader:
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
-            old_loss = criterion(net(inputs), targets)
-            optimizer.zero_grad()
-            old_loss.backward()
 
             for client in range(num_clients):
-                # print('client: {}'.format(client))
-                net_copy = copy.deepcopy(net)
-                net_copy.train()
-                optimizer_copy = torch.optim.SGD(net_copy.parameters(), lr=0.1)
-                outputs = net_copy(inputs)
+                outputs = net(inputs)
+                loss = criterion(outputs, targets)
 
                 if batch_idx % number_batches_recompute == 0:
                     batch_size = len(inputs)
-                    subsample_size = 100
                     loss = criterion(outputs, targets)
-                    optimizer_copy.zero_grad()
+                    optimizer.zero_grad()
                     loss.backward(create_graph=True, retain_graph=True)
-                    A_list[client] = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter in net_copy.parameters() if parameter.nelement() >= minimum_parameter_size]
-                    update_indices_list[client] = [np.random.choice(parameter.nelement(), fixed_size) for parameter in net_copy.parameters() if parameter.nelement() >= minimum_parameter_size]
+                    fixed_size_list = [int(parameter.nelement() * fixed_ratio) for parameter in net.parameters()]
+                    # fixed_size_list = [block_size for parameter in net.parameters()]
+                    A_list[client] = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter, fixed_size in zip(net.parameters(), fixed_size_list) if parameter.nelement() >= minimum_parameter_size]
+                    update_indices_list[client] = [np.random.choice(parameter.nelement(), fixed_size, p=torch.abs(parameter.grad.flatten().detach()).cpu().numpy()/np.sum(torch.abs(parameter.grad.flatten().detach()).cpu().numpy())) for parameter, fixed_size in zip(net.parameters(), fixed_size_list) if parameter.nelement() >= minimum_parameter_size]
 
-                    for i in range(fixed_size):
-                        v = torch.zeros(fixed_size).to(device)
-                        v[i] = 1
+                    parameter_idx = 0
+                    for parameter, fixed_size in zip(net.parameters(), fixed_size_list):
+                        if parameter.nelement() < minimum_parameter_size:
+                            continue
+                        for i in range(fixed_size):
+                            v = torch.zeros(fixed_size).to(device)
+                            v[i] = 1
                     
-                        parameter_idx = 0
-                        for parameter in net_copy.parameters():
-                            if parameter.nelement() < minimum_parameter_size:
-                                continue
                             update_indices = update_indices_list[client][parameter_idx]
                             grad = parameter.grad.flatten()[update_indices]
-                            grad_v = torch.autograd.grad(grad @ v, parameter, retain_graph=True)[0].flatten()[update_indices] + 0.01 * v
+                            grad_v = torch.autograd.grad(grad @ v, parameter, retain_graph=True)[0].flatten()[update_indices] + 0.01 * v # normalization
                             A_list[client][parameter_idx][:,i] = grad_v
-                            parameter_idx += 1
+                        parameter_idx += 1
 
                 b_list = []
+                x = []
                 parameter_idx = 0
-                loss = criterion(outputs, targets)
-                optimizer_copy.zero_grad()
-                loss.backward() # create_graph=True, retain_graph=True)
-                for parameter in net_copy.parameters():
+                for parameter in net.parameters():
                     if parameter.nelement() < minimum_parameter_size:
                         continue
                     update_indices = update_indices_list[client][parameter_idx]
                     b = parameter.grad.detach().flatten()[update_indices]
-                    b_list.append(b[:,None])
-                    parameter_idx += 1
-                    # x, LU = torch.solve(b[:,None], A)
+                    # b_list.append(b[:,None])
+                    new_x, LU = torch.solve(b[:,None], A_list[client][parameter_idx])
+                    x.append(new_x)
                     # x, info = scipy.sparse.linalg.cg(A.detach().numpy(), parameter.grad.detach().cpu().flatten()[update_indices], maxiter=100)
-                A, b = torch.stack(A_list[client]), torch.stack(b_list)
-                x, LU = torch.solve(b, A)
-                x = x / torch.norm(x, dim=1) # normalization
+                    parameter_idx += 1
+
+                # A, b = torch.stack(A_list[client]), torch.stack(b_list)
+                # x, LU = torch.solve(b, A)
 
                 # ================= perform line search to find the optimal step ==============
                 parameter_idx = 0
                 # print('parameter size:', len(list(net.parameters())))
                 param_group = list(optimizer.param_groups)[0]
-                for idx, (new_parameter, parameter) in enumerate(zip(net_copy.parameters(), net.parameters())):
-                    if new_parameter.nelement() < minimum_parameter_size:
+                update_step_list = [[] for parameter in net.parameters()]
+                for idx, parameter in enumerate(net.parameters()):
+                    old_parameter = copy.deepcopy(parameter)
+                    if parameter.nelement() < minimum_parameter_size:
                         continue
                     update_indices = update_indices_list[client][parameter_idx]
 
                     # line search
-                    grad_improvement = new_parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
-                    print('line {} search improvement: {}'.format(idx, grad_improvement))
-                    print('old loss:', loss.item())
+                    grad_improvement = parameter.grad.flatten().detach()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
+                    # print('line {} search improvement: {}'.format(idx, grad_improvement))
+                    # print('old loss:', loss.item())
                     if grad_improvement > 0:
-                        exp_reduction = epoch // 5
-                        scale = param_group['lr']
-                        new_parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
+                        scale = 0.01 # param_group['lr']
+                        parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
                         success = False
                         for linesearch_idx in range(10): # at most 10 iterations of line search
                             alpha_rate = 0.5 ** linesearch_idx * scale
-                            ita = 0.5 
-                            new_parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * alpha_rate # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
-                            tmp_output = net_copy(inputs).detach()
+                            ita = 1 
+                            parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * alpha_rate # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
+                            tmp_output = net(inputs).detach()
                             tmp_loss = criterion(tmp_output, targets)
                             compared_value = loss.item() - ita * alpha_rate * grad_improvement
-                            print('linesearch idx: {}, new loss: {}, compared value: {}'.format(linesearch_idx, tmp_loss, compared_value) )
+                            # print('linesearch idx: {}, new loss: {}, compared value: {}'.format(linesearch_idx, tmp_loss, compared_value) )
                             if tmp_loss <= compared_value: # if the improvement is good enough
                                 success = True
                                 break
-                        new_parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * alpha_rate # -2 grad
-                        assert(torch.norm(new_parameter.data - parameter.data) < 0.001)
-                        # print('alpha rate:', alpha_rate)
-                        parameter.grad = torch.zeros_like(parameter.grad)
+                        parameter.data = old_parameter.data  # -2 grad
                         if success:
-                            parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * alpha_rate / scale # divide by lr since it will be added back later
+                            parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * alpha_rate
+                            # update_step_list[parameter_idx] = x[parameter_idx][:,0] * alpha_rate / (scale) # divide by lr since it will be added back later
+                        else:
+                            update_step_list[parameter_idx] = torch.zeros_like(x[parameter_idx][:,0])
+                    else:
+                        update_step_list[parameter_idx] = torch.zeros_like(x[parameter_idx][:,0])
+
                     # else:
                     #     # do nothing and debug, it is probably due to the non-positive definite issue
                     #     print('line search error with negative improvement:', grad_improvement)
 
                     parameter_idx += 1
 
-                # update optimizer state
                 optimizer.step()
 
             # compute average loss
@@ -465,11 +462,11 @@ method = 'explicit' # SGD, explicit, implicit, newton
 device = 'cuda'
 net = ConvNet()
 net = net.to(device)
-lr = 0.1 # 0.1, 1.0, 0.0001
-milestones = [5,10,15,20]
-epochs = 25 # 5 or 100
-fixed_size = 16
-number_batches_recompute = 32
+lr = 0.01 # 0.1, 1.0, 0.0001
+milestones = [25, 50, 75, 100] # [5,10,15,20]
+epochs = 20 # 5 or 100
+block_size, fixed_ratio = 10, 0.001
+number_batches_recompute = 10
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -488,6 +485,7 @@ print('Training for {} epochs, with learning rate {} and milestones {}'.format(
       epochs, lr, milestones))
 
 start_time = time.time()
+net.load_state_dict(torch.load('model.pt'))
 SGD_warm_start = 0
 for epoch in range(0, epochs):
     if method == 'SGD' or epoch < SGD_warm_start:
@@ -500,6 +498,7 @@ for epoch in range(0, epochs):
         implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
     test(epoch, test_loss_tracker, test_acc_tracker)
     scheduler.step()
+    # torch.save(net.state_dict(), 'model.pt')
 
 total_time = time.time() - start_time
 print('Total training time: {} seconds'.format(total_time))
