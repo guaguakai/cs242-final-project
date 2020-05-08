@@ -319,6 +319,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     # x, info = scipy.sparse.linalg.cg(A.detach().numpy(), parameter.grad.detach().cpu().flatten()[update_indices], maxiter=100)
                 A, b = torch.stack(A_list[client]), torch.stack(b_list)
                 x, LU = torch.solve(b, A)
+                x = x / torch.norm(x, dim=1) # normalization
 
                 # ================= perform line search to find the optimal step ==============
                 parameter_idx = 0
