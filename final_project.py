@@ -269,7 +269,6 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     correct = 0
     total = 0
     num_clients = 4
-    print("Number of parallel machines:", num_clients)
     regularization_const = 0.1
     minimum_parameter_size = 100
     update_indices_list = [[]] * num_clients
@@ -277,27 +276,32 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     with tqdm.tqdm(trainloader) as tqdm_loader:
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
+            old_loss = criterion(net(inputs), targets)
+            optimizer.zero_grad()
+            old_loss.backward()
+
             for client in range(num_clients):
-                print('Batch: {}, client: {}'.format(batch_idx, client))
-                outputs = net(inputs)
+                # print('client: {}'.format(client))
                 net_copy = copy.deepcopy(net)
-                net_copy.eval()
+                net_copy.train()
+                optimizer_copy = torch.optim.SGD(net_copy.parameters(), lr=0.1)
+                outputs = net_copy(inputs)
 
                 if batch_idx % number_batches_recompute == 0:
                     batch_size = len(inputs)
-                    subsample_size = 10
+                    subsample_size = 100
                     loss = criterion(outputs, targets)
-                    optimizer.zero_grad()
+                    optimizer_copy.zero_grad()
                     loss.backward(create_graph=True, retain_graph=True)
-                    A_list[client] = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
-                    update_indices_list[client] = [np.random.choice(parameter.nelement(), fixed_size) for parameter in net.parameters() if parameter.nelement() >= minimum_parameter_size]
+                    A_list[client] = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter in net_copy.parameters() if parameter.nelement() >= minimum_parameter_size]
+                    update_indices_list[client] = [np.random.choice(parameter.nelement(), fixed_size) for parameter in net_copy.parameters() if parameter.nelement() >= minimum_parameter_size]
 
                     for i in range(fixed_size):
                         v = torch.zeros(fixed_size).to(device)
                         v[i] = 1
                     
                         parameter_idx = 0
-                        for parameter in net.parameters():
+                        for parameter in net_copy.parameters():
                             if parameter.nelement() < minimum_parameter_size:
                                 continue
                             update_indices = update_indices_list[client][parameter_idx]
@@ -309,9 +313,9 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                 b_list = []
                 parameter_idx = 0
                 loss = criterion(outputs, targets)
-                optimizer.zero_grad()
-                loss.backward(create_graph=True, retain_graph=True)
-                for parameter in net.parameters():
+                optimizer_copy.zero_grad()
+                loss.backward() # create_graph=True, retain_graph=True)
+                for parameter in net_copy.parameters():
                     if parameter.nelement() < minimum_parameter_size:
                         continue
                     update_indices = update_indices_list[client][parameter_idx]
@@ -325,35 +329,48 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
                 # ================= perform line search to find the optimal step ==============
                 parameter_idx = 0
-                for (idx, new_parameter), (_, parameter) in zip(enumerate(net_copy.parameters()), enumerate(net.parameters())):
+                # print('parameter size:', len(list(net.parameters())))
+                param_group = list(optimizer.param_groups)[0]
+                for idx, (new_parameter, parameter) in enumerate(zip(net_copy.parameters(), net.parameters())):
                     if new_parameter.nelement() < minimum_parameter_size:
                         continue
                     update_indices = update_indices_list[client][parameter_idx]
 
                     # line search
-                    grad_improvement = parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
-                    # print('line search improvement:', grad_improvement)
+                    grad_improvement = new_parameter.grad.flatten()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
+                    print('line {} search improvement: {}'.format(idx, grad_improvement))
+                    print('old loss:', loss.item())
                     if grad_improvement > 0:
                         exp_reduction = epoch // 5
-                        scale = 0.5 ** exp_reduction
+                        scale = param_group['lr']
                         new_parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
-                        for linesearch_idx in range(exp_reduction,10): # at most 10 iterations of line search
-                            alpha_rate = 0.5 ** linesearch_idx
+                        success = False
+                        for linesearch_idx in range(10): # at most 10 iterations of line search
+                            alpha_rate = 0.5 ** linesearch_idx * scale
                             ita = 0.5 
-                            new_parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
+                            new_parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * alpha_rate # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
                             tmp_output = net_copy(inputs).detach()
-                            tmp_loss = criterion(outputs, targets)
-                            if tmp_loss <= loss.item() - ita * alpha_rate * grad_improvement: # if the improvement is good enough
+                            tmp_loss = criterion(tmp_output, targets)
+                            compared_value = loss.item() - ita * alpha_rate * grad_improvement
+                            print('linesearch idx: {}, new loss: {}, compared value: {}'.format(linesearch_idx, tmp_loss, compared_value) )
+                            if tmp_loss <= compared_value: # if the improvement is good enough
+                                success = True
                                 break
-                        parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * (0.5 ** linesearch_idx)
+                        new_parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * alpha_rate # -2 grad
+                        assert(torch.norm(new_parameter.data - parameter.data) < 0.001)
+                        # print('alpha rate:', alpha_rate)
+                        parameter.grad = torch.zeros_like(parameter.grad)
+                        if success:
+                            parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * alpha_rate / scale # divide by lr since it will be added back later
                     # else:
                     #     # do nothing and debug, it is probably due to the non-positive definite issue
                     #     print('line search error with negative improvement:', grad_improvement)
 
                     parameter_idx += 1
 
-            # update optimizer state
-            optimizer.step()
+                # update optimizer state
+                optimizer.step()
+
             # compute average loss
             train_loss += loss.item()
             train_loss_tracker.append(loss.item())
@@ -379,7 +396,7 @@ def implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     correct = 0
     total = 0
     regularization_const = 0.1
-    minimum_parameter_size = 100
+    minimum_parameter_size = 20
     with tqdm.tqdm(trainloader) as tqdm_loader:
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
@@ -449,7 +466,7 @@ net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [5,10,15,20]
-epochs = 20 # 5 or 100
+epochs = 25 # 5 or 100
 fixed_size = 16
 number_batches_recompute = 32
 
@@ -470,8 +487,9 @@ print('Training for {} epochs, with learning rate {} and milestones {}'.format(
       epochs, lr, milestones))
 
 start_time = time.time()
+SGD_warm_start = 0
 for epoch in range(0, epochs):
-    if method == 'SGD':
+    if method == 'SGD' or epoch < SGD_warm_start:
         train(epoch, train_loss_tracker, train_acc_tracker)
     elif method == 'newton':
         newton_train(epoch, train_loss_tracker, train_acc_tracker)
