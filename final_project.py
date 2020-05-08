@@ -286,8 +286,8 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     loss = criterion(outputs, targets)
                     optimizer.zero_grad()
                     loss.backward(create_graph=True, retain_graph=True)
-                    fixed_size_list = [int(parameter.nelement() * fixed_ratio) for parameter in net.parameters()]
-                    # fixed_size_list = [block_size for parameter in net.parameters()]
+                    # fixed_size_list = [int(parameter.nelement() * fixed_ratio) for parameter in net.parameters()]
+                    fixed_size_list = [block_size for parameter in net.parameters()]
                     A_list[client] = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter, fixed_size in zip(net.parameters(), fixed_size_list) if parameter.nelement() >= minimum_parameter_size]
                     update_indices_list[client] = [np.random.choice(parameter.nelement(), fixed_size, p=torch.abs(parameter.grad.flatten().detach()).cpu().numpy()/np.sum(torch.abs(parameter.grad.flatten().detach()).cpu().numpy())) for parameter, fixed_size in zip(net.parameters(), fixed_size_list) if parameter.nelement() >= minimum_parameter_size]
 
