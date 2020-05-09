@@ -116,12 +116,12 @@ class SmallConvNet(nn.Module):
             conv_block(32, 64, stride=2),
             conv_block(64, 128),
             conv_block(128, 128, stride=2),
-            conv_block(128, 256),
-            conv_block(256, 256, stride=2),
+            conv_block(128, 128),
+            conv_block(128, 128, stride=2),
             nn.AdaptiveAvgPool2d(1)
             )
 
-        self.classifier = nn.Linear(256, 10)
+        self.classifier = nn.Linear(128, 10)
 
     def forward(self, x):
         h = self.model(x)
