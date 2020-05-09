@@ -450,8 +450,8 @@ device = 'cuda'
 net = SmallConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
-milestones = [25, 50, 75, 100] # [5,10,15,20]
-epochs = 100 # 5 or 100
+milestones = [5,10,15,20]
+epochs = 25 # 5 or 100
 block_size, fixed_ratio = 32, 0.001
 number_batches_recompute = 8
 
