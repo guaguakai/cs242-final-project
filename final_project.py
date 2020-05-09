@@ -77,13 +77,6 @@ In this assignment, you will modify `ConvNet` to implement Shift-Convolution (Se
 
 def conv_block(in_channels, out_channels, kernel_size=3, stride=1,
                padding=1):
-    '''
-    A nn.Sequential layer executes its arguments in sequential order. In
-    this case, it performs Conv2d -> BatchNorm2d -> ReLU. This is a typical
-    block of layers used in Convolutional Neural Networks (CNNs). The 
-    ConvNet implementation below stacks multiple instances of this three layer
-    pattern in order to achieve over 90% classification accuracy on CIFAR-10.
-    '''
     return nn.Sequential(
         nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding,
                   bias=False),
@@ -92,17 +85,6 @@ def conv_block(in_channels, out_channels, kernel_size=3, stride=1,
         )
 
 class ConvNet(nn.Module):
-    '''
-    A 9 layer CNN using the conv_block function above. Again, we use a
-    nn.Sequential layer to build the entire model. The Conv2d layers get
-    progressively larger (more filters) as the model gets deeper. This 
-    corresponds to spatial resolution getting smaller (via the stride=2 blocks),
-    going from 32x32 -> 16x16 -> 8x8. The nn.AdaptiveAvgPool2d layer at the end
-    of the model reduces the spatial resolution from 8x8 to 1x1 using a simple
-    average across all the pixels in each channel. This is then fed to the 
-    single fully connected (linear) layer called classifier, which is the output
-    prediction of the model.
-    '''
     def __init__(self):
         super(ConvNet, self).__init__()
         self.model = nn.Sequential(
@@ -121,24 +103,31 @@ class ConvNet(nn.Module):
         self.classifier = nn.Linear(256, 10)
 
     def forward(self, x):
-        '''
-        The forward function is called automatically by the model when it is
-        given an input image. It first applies the 8 convolution layers, then
-        finally the single classifier layer.
-        '''
         h = self.model(x)
         B, C, _, _ = h.shape
         h = h.view(B, C)
         return self.classifier(h)
 
-"""**Training ConvNet on the CIFAR-10 Dataset**
+class SmallConvNet(nn.Module):
+    def __init__(self):
+        super(SmallConvNet, self).__init__()
+        self.model = nn.Sequential(
+            conv_block(3, 32),
+            conv_block(32, 64, stride=2),
+            conv_block(64, 128),
+            conv_block(128, 128, stride=2),
+            conv_block(128, 256),
+            conv_block(256, 256, stride=2),
+            nn.AdaptiveAvgPool2d(1)
+            )
 
-Now that we have loaded our train and test datasets, and created our model, it is time to train the model. This training process will take around 15 seconds per epoch (an epoch is an entire pass through the training dataset). Usually, we need to train models for many epochs in order to achieve good classification accuracy. For this assignment, we will train most models for 100 epochs. This means that the training process takes roughly 15 seconds * 100 = 25 minutes. **Please do not close or refresh this colab instance during training and export results if you plan on using them in the future.** Note that the Google Colab is non-persistent, meaning that when the session is left idle for a period of time (such as 30-minutes) and the state of the machine will be lost. When this happens, you must execute all Code Cells in order up to your current point of progress. To avoid this, you may want to ensure that your session stays alive.
+        self.classifier = nn.Linear(256, 10)
 
-*Code Cell 1.4* provides a `train` function that will perform one epoch worth of training each time it is called. The `test` function will evaluate the performance of the model on the held out test set.
-"""
-
-## Code Cell 1.4
+    def forward(self, x):
+        h = self.model(x)
+        B, C, _, _ = h.shape
+        h = h.view(B, C)
+        return self.classifier(h)
 
 # tracks the highest accuracy observed so far
 best_acc = 0
@@ -268,7 +257,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     train_loss = 0
     correct = 0
     total = 0
-    num_clients = 1
+    num_clients = 5
     regularization_const = 0.1
     minimum_parameter_size = 2000
     update_indices_list = [[]] * num_clients
@@ -276,16 +265,14 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     with tqdm.tqdm(trainloader) as tqdm_loader:
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
+            outputs = net(inputs)
+            loss = criterion(outputs, targets)
+            optimizer.zero_grad()
+            loss.backward(create_graph=True, retain_graph=True)
 
             for client in range(num_clients):
-                outputs = net(inputs)
-                loss = criterion(outputs, targets)
-
                 if batch_idx % number_batches_recompute == 0:
                     batch_size = len(inputs)
-                    loss = criterion(outputs, targets)
-                    optimizer.zero_grad()
-                    loss.backward(create_graph=True, retain_graph=True)
                     # fixed_size_list = [int(parameter.nelement() * fixed_ratio) for parameter in net.parameters()]
                     fixed_size_list = [block_size for parameter in net.parameters()]
                     A_list[client] = [torch.zeros((fixed_size, fixed_size)).to(device) for parameter, fixed_size in zip(net.parameters(), fixed_size_list) if parameter.nelement() >= minimum_parameter_size]
@@ -301,7 +288,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     
                             update_indices = update_indices_list[client][parameter_idx]
                             grad = parameter.grad.flatten()[update_indices]
-                            grad_v = torch.autograd.grad(grad @ v, parameter, retain_graph=True)[0].flatten()[update_indices] + 0.01 * v # normalization
+                            grad_v = torch.autograd.grad(grad @ v, parameter, retain_graph=True)[0].flatten()[update_indices] + regularization_const * v # normalization
                             A_list[client][parameter_idx][:,i] = grad_v
                         parameter_idx += 1
 
@@ -327,6 +314,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                 # print('parameter size:', len(list(net.parameters())))
                 param_group = list(optimizer.param_groups)[0]
                 update_step_list = [[] for parameter in net.parameters()]
+
                 for idx, parameter in enumerate(net.parameters()):
                     old_parameter = copy.deepcopy(parameter)
                     if parameter.nelement() < minimum_parameter_size:
@@ -338,7 +326,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     # print('line {} search improvement: {}'.format(idx, grad_improvement))
                     # print('old loss:', loss.item())
                     if grad_improvement > 0:
-                        scale = 0.01 # param_group['lr']
+                        scale = 1 # param_group['lr']
                         parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
                         success = False
                         for linesearch_idx in range(10): # at most 10 iterations of line search
@@ -354,12 +342,11 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                                 break
                         parameter.data = old_parameter.data  # -2 grad
                         if success:
-                            parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * alpha_rate
+                            # pass 
+                            parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * alpha_rate / scale
                             # update_step_list[parameter_idx] = x[parameter_idx][:,0] * alpha_rate / (scale) # divide by lr since it will be added back later
                         else:
-                            update_step_list[parameter_idx] = torch.zeros_like(x[parameter_idx][:,0])
-                    else:
-                        update_step_list[parameter_idx] = torch.zeros_like(x[parameter_idx][:,0])
+                            pass
 
                     # else:
                     #     # do nothing and debug, it is probably due to the non-positive definite issue
@@ -367,7 +354,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
                     parameter_idx += 1
 
-                optimizer.step()
+            optimizer.step()
 
             # compute average loss
             train_loss += loss.item()
@@ -460,13 +447,13 @@ def implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
 method = 'explicit' # SGD, explicit, implicit, newton
 device = 'cuda'
-net = ConvNet()
+net = SmallConvNet()
 net = net.to(device)
-lr = 0.01 # 0.1, 1.0, 0.0001
+lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [25, 50, 75, 100] # [5,10,15,20]
-epochs = 20 # 5 or 100
-block_size, fixed_ratio = 10, 0.001
-number_batches_recompute = 10
+epochs = 100 # 5 or 100
+block_size, fixed_ratio = 32, 0.001
+number_batches_recompute = 8
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9,
@@ -485,7 +472,7 @@ print('Training for {} epochs, with learning rate {} and milestones {}'.format(
       epochs, lr, milestones))
 
 start_time = time.time()
-net.load_state_dict(torch.load('model.pt'))
+# net.load_state_dict(torch.load('model.pt'))
 SGD_warm_start = 0
 for epoch in range(0, epochs):
     if method == 'SGD' or epoch < SGD_warm_start:
