@@ -445,9 +445,9 @@ def implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
 
 
-method = 'explicit' # SGD, explicit, implicit, newton
+method = 'SGD' # SGD, explicit, implicit, newton
 device = 'cuda'
-net = SmallConvNet()
+net = ConvNet()
 net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [5,10,15,20]
@@ -510,7 +510,7 @@ plt.savefig('figures/{}_testing_acc.png'.format(method))
 # plt.show()
 plt.clf()
 
-f_result = open('results/{}.csv'.format(method), 'w')
+f_result = open('results/big-{}.csv'.format(method), 'w')
 f_result.write('training loss,' + ','.join([str(x.item()) for x in moving_average_train_loss]) + '\n')
 f_result.write('testing accuracy,' + ','.join([str(x) for x in test_acc_tracker]) + '\n')
 f_result.close()
