@@ -112,16 +112,16 @@ class SmallConvNet(nn.Module):
     def __init__(self):
         super(SmallConvNet, self).__init__()
         self.model = nn.Sequential(
-            conv_block(3, 32),
-            conv_block(32, 64, stride=2),
-            conv_block(64, 128),
-            conv_block(128, 128, stride=2),
-            conv_block(128, 128),
-            conv_block(128, 128, stride=2),
+            conv_block(3, 16),
+            conv_block(16, 32, stride=2),
+            conv_block(32, 64),
+            conv_block(64, 64, stride=2),
+            conv_block(64, 64),
+            conv_block(64, 64, stride=2),
             nn.AdaptiveAvgPool2d(1)
             )
 
-        self.classifier = nn.Linear(128, 10)
+        self.classifier = nn.Linear(64, 10)
 
     def forward(self, x):
         h = self.model(x)
@@ -326,7 +326,7 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     # print('line {} search improvement: {}'.format(idx, grad_improvement))
                     # print('old loss:', loss.item())
                     if grad_improvement > 0:
-                        scale = 1 # param_group['lr']
+                        scale = param_group['lr']
                         parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
                         success = False
                         for linesearch_idx in range(10): # at most 10 iterations of line search
