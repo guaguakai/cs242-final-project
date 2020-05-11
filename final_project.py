@@ -227,8 +227,8 @@ def newton_train(epoch, train_loss_tracker, train_acc_tracker):
                 z = grad @ torch.Tensor(v).to(device)
                 return torch.autograd.grad(z, parameter, retain_graph=True)[0].cpu().detach().flatten().numpy() + regularization_const * v
             A = LinearOperator((parameter_size, parameter_size), matvec=mv)
+            # computing conjugate gradient step
             x, info = scipy.sparse.linalg.cg(A, parameter.grad.cpu().detach().flatten(), maxiter=100)
-            # x, info = scipy.sparse.linalg.cg(A, parameter.grad.cpu().detach().flatten())
             parameter.grad = torch.Tensor(x.reshape(parameter.grad.shape)).to(device)
 
         # update optimizer state
@@ -321,10 +321,8 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                         continue
                     update_indices = update_indices_list[client][parameter_idx]
 
-                    # line search
+                    # ==================== Line search =======================
                     grad_improvement = parameter.grad.flatten().detach()[update_indices] @ x[parameter_idx][:,0] # precompute the gradient improvement
-                    # print('line {} search improvement: {}'.format(idx, grad_improvement))
-                    # print('old loss:', loss.item())
                     if grad_improvement > 0:
                         scale = param_group['lr']
                         parameter.data.flatten()[update_indices] -= 2 * scale * x[parameter_idx][:,0] # -2 grad
@@ -332,25 +330,19 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                         for linesearch_idx in range(10): # at most 10 iterations of line search
                             alpha_rate = 0.5 ** linesearch_idx * scale
                             ita = 1 
-                            parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * alpha_rate # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
+                            parameter.data.flatten()[update_indices] += x[parameter_idx][:,0] * alpha_rate # inplace update: +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
                             tmp_output = net(inputs).detach()
                             tmp_loss = criterion(tmp_output, targets)
                             compared_value = loss.item() - ita * alpha_rate * grad_improvement
-                            # print('linesearch idx: {}, new loss: {}, compared value: {}'.format(linesearch_idx, tmp_loss, compared_value) )
                             if tmp_loss <= compared_value: # if the improvement is good enough
                                 success = True
                                 break
                         parameter.data = old_parameter.data  # -2 grad
                         if success:
-                            # pass 
                             parameter.grad.flatten()[update_indices] = x[parameter_idx][:,0] * alpha_rate / scale
                             # update_step_list[parameter_idx] = x[parameter_idx][:,0] * alpha_rate / (scale) # divide by lr since it will be added back later
                         else:
                             pass
-
-                    # else:
-                    #     # do nothing and debug, it is probably due to the non-positive definite issue
-                    #     print('line search error with negative improvement:', grad_improvement)
 
                     parameter_idx += 1
 
@@ -365,11 +357,8 @@ def explicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
             acc = 100. * correct / total
-            # Print status
+
             tqdm_loader.set_postfix(loss=f'{average_loss:.3f}', accuracy=f'{acc:.3f}')
-            # sys.stdout.write(f'\rEpoch {epoch}: Train Loss: {loss:.3f}' +
-            #                  f'| Train Acc: {acc:.3f}')
-            # sys.stdout.flush()
         train_acc_tracker.append(acc)
         sys.stdout.flush()
 
@@ -381,7 +370,7 @@ def implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
     correct = 0
     total = 0
     regularization_const = 0.1
-    minimum_parameter_size = 20
+    minimum_parameter_size = 2000
     with tqdm.tqdm(trainloader) as tqdm_loader:
         for batch_idx, (inputs, targets) in enumerate(tqdm_loader):
             inputs, targets = inputs.to(device), targets.to(device)
@@ -416,7 +405,7 @@ def implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
                     parameter.data.flatten()[update_indices] -= 2 * x # -2 grad
                     for linesearch_idx in range(0,5): # at most 10 iterations of line search
                         alpha_rate = 0.5 ** linesearch_idx
-                        ita = 0.5
+                        ita = 1
                         parameter.data.flatten()[update_indices] += x * (0.5 ** linesearch_idx) # +1 + 0.5 + 0.25 ... grad, which results in -1 -0.5 -0.25 in total
                         tmp_output = net(inputs).detach()
                         tmp_loss = criterion(outputs, targets)
@@ -452,7 +441,7 @@ net = net.to(device)
 lr = 0.1 # 0.1, 1.0, 0.0001
 milestones = [5,10,15,20]
 epochs = 25 # 5 or 100
-block_size, fixed_ratio = 32, 0.001
+block_size = 32
 number_batches_recompute = 8
 
 criterion = nn.CrossEntropyLoss()
@@ -472,7 +461,6 @@ print('Training for {} epochs, with learning rate {} and milestones {}'.format(
       epochs, lr, milestones))
 
 start_time = time.time()
-# net.load_state_dict(torch.load('model.pt'))
 SGD_warm_start = 0
 for epoch in range(0, epochs):
     if method == 'SGD' or epoch < SGD_warm_start:
@@ -485,7 +473,6 @@ for epoch in range(0, epochs):
         implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker)
     test(epoch, test_loss_tracker, test_acc_tracker)
     scheduler.step()
-    # torch.save(net.state_dict(), 'model.pt')
 
 total_time = time.time() - start_time
 print('Total training time: {} seconds'.format(total_time))
@@ -500,17 +487,17 @@ plt.xlabel('batches')
 plt.ylabel('training loss')
 plt.plot(moving_average_train_loss)
 plt.savefig('figures/{}_training_loss.png'.format(method))
-# plt.show()
+plt.show()
 plt.clf()
 
 plt.xlabel('epochs')
 plt.ylabel('testing accuracy')
 plt.plot(list(range(len(test_acc_tracker))), test_acc_tracker)
 plt.savefig('figures/{}_testing_acc.png'.format(method))
-# plt.show()
+plt.show()
 plt.clf()
 
-f_result = open('results/big-{}.csv'.format(method), 'w')
+f_result = open('results/{}.csv'.format(method), 'w')
 f_result.write('training loss,' + ','.join([str(x.item()) for x in moving_average_train_loss]) + '\n')
 f_result.write('testing accuracy,' + ','.join([str(x) for x in test_acc_tracker]) + '\n')
 f_result.close()
