@@ -445,7 +445,7 @@ def implicit_block_newton_train(epoch, train_loss_tracker, train_acc_tracker):
 
 
 
-method = 'SGD' # SGD, explicit, implicit, newton
+method = 'explicit' # SGD, explicit, implicit, newton
 device = 'cuda'
 net = ConvNet()
 net = net.to(device)
